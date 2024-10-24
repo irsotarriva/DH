@@ -1,0 +1,7 @@
+numpy == 1.24.4
+torch
+kagglehub
+pandas
+PyQt5
+immutabledict
+sentencepiece == 0.1.99

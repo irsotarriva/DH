@@ -1,0 +1,43 @@
+{
+	"version": 1,
+	"disable_existing_loggers": false,
+	"formatters": {
+		"coloured": {
+			"()": "log.log.ColouredFormatter",
+			"fmt_keys": {
+				"message": "message",
+				"module": "module"
+			}
+		},
+		"json": {
+			"()": "log.log.JsonFormatter",
+			"fmt_keys": {
+				"message": "message",
+				"module": "module"
+			}
+		}
+	},
+	"handlers": {
+		"console": {
+			"class": "logging.StreamHandler",
+			"formatter": "coloured"
+		},
+		"file": {
+			"class": "logging.handlers.RotatingFileHandler",
+			"formatter": "json",
+			"filename": "log/logs/pyLog.log.jsonl",
+			"maxBytes": 10485760,
+			"backupCount": 5
+		}
+	},
+	"loggers": {
+		"app": {
+			"handlers": ["console", "file"],
+			"level": "DEBUG"
+		}
+	},
+	"root": {
+		"handlers": ["console", "file"],
+		"level": "DEBUG"
+	}
+}
