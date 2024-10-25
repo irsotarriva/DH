@@ -12,6 +12,9 @@ This project has been developed as an assignment for the course "Collaboration a
 - pip
 - Kaggle API key
 
+## Installation in Colab
+Follow the steps [here](collab_install.ipynb) to install and run the project in Google Colab.
+
 ## Installation
 
 1. Clone the repository
@@ -50,7 +53,6 @@ If you have any questions, feel free to contact me by [email](mailto:sotarriva.i
 
 ## References
 
-- [OpenAI](https://openai.com)
 - [Institute of Sciences Tokyo](https://www.titech.ac.jp)
 - [Kaggle](https://www.kaggle.com)
 - [Gemma](https://ai.google.dev/gemma)

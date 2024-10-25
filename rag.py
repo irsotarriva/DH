@@ -15,18 +15,11 @@ import contextlib
 import logging
 from enum import Enum
 log = logging.getLogger(__name__) # Set up logging
-#import UI/kaggle_login as kl
-import UI.kaggle_login as kl
 #Try to import the necessary libraries. If they are not found, suggest the user how to install them.
 try:
     import torch
 except ImportError:
     log.critical("PyTorch not found.You might try installing it via 'pip install torch'.")
-    sys.exit(1)
-try:
-    from PyQt5.QtWidgets import QApplication
-except ImportError:
-    log.critical("PyQt5 not found. You might try installing it via 'pip install PyQt5'.")
     sys.exit(1)
 try:
     import kagglehub
@@ -39,11 +32,32 @@ try:
 except ImportError:
     log.critical("Pandas not found. You might try installing it via 'pip install pandas'.")
     sys.exit(1)
-if not os.path.exists(os.path.join(os.getcwd(), "gemma_pytorch")):
+
+#check if is running in google colab if so, set the Kaggle API keys from the environment variables
+IS_COLAB = False
+try:
+    from google.colab import userdata
+    IS_COLAB = True
+except ImportError:
+    IS_COLAB = False
+    log.info("Colab enviroment not detected")
+except AttributeError:
+    IS_COLAB = True
+    log.info("Colab found, but the secrets could not be accessed. Be sure the user name is stored as COLAB_SECRET_USERNAME and the password as COLAB_SECRET_PASSWORD")
+try:#PyQt5 will only be used outside of Google Colab. However, it is necessary to import it here to avoid errors.
+    from PyQt5.QtWidgets import QApplication
+except ImportError:
+    log.critical("PyQt5 not found. You might try installing it via 'pip install PyQt5'.")
+    sys.exit(1)
+if not IS_COLAB:
+    gemma_path = os.path.join(os.getcwd(), "gemma_pytorch")
+else:
+    gemma_path = "/content/DH/gemma_pytorch"
+if not os.path.exists(gemma_path):
     log.critical("Gemma not found.Try running git submodule init and git submodule update to get the Gemma repository.")
     log.critical(" If you are still finding troubles after trying the previous solution,you might try installing by cloning the repository from github: git clone https://github.com/google/gemma_pytorch.git on the working directory.")
 try:
-    sys.path.append(os.path.join(os.getcwd(), "gemma_pytorch"))
+    sys.path.append(gemma_path)
     from gemma.config import GemmaConfig, get_model_config
     from gemma.model import GemmaForCausalLM
     from gemma.tokenizer import Tokenizer
@@ -51,11 +65,13 @@ except ImportError:
     log.critical("Error importing Gemma. The gemmma_pytorch repository was found but the it is not installed yet.")
     log.critical("You might try installing it by cd into the gemma_pytorch folder and running 'pip install -e .'.")
     sys.exit(1)
-
 #check if the machine has cuda available, if not set the machine type to cpu
 MACHINE_TYPE: str = "cpu"
 if torch.cuda.is_available():
+    log.info("CUDA available. Using GPU.")
     MACHINE_TYPE = "cuda"
+else:
+    log.warning("Using CPU, this might lead to longer response times.")
 # -----------------------------------------------------------------------------BODY-----------------------------------------------------------------------------#
 
 def _handle_login(username: str, password: str) -> bool:
@@ -163,7 +179,16 @@ class RAG:
         @return None
         """
         #Check if kaggle has been logged in. If not, ask the user to log in.
-        if kagglehub.config.get_kaggle_credentials() is None:
+        #If not running in Google Colab, check if the Kaggle credentials are stored. If not, ask the user to log in.
+        try:
+            credentials = kagglehub.config.get_kaggle_credentials()
+        except Exception as e:
+            credentials = None
+            if IS_COLAB:
+                log.critical("Could not get the Kaggle credentials. Please make sure the Kaggle API keys have been set in the environment variables KAGGLE_USERNAME and KAGGLE_KEY.")
+                log.critical(e)
+                sys.exit(1)
+        if not credentials:
             #This will happen the first time the program is run.
             log.info("This program uses the Kaggle API to download the data. You will need to have a Kaggle account and API credentials.")
             log.info("Learn how to obtain your Kaggle API credentials by going to https://www.kaggle.com/docs/api#authentication")
