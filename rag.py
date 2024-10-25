@@ -14,6 +14,7 @@ import subprocess
 import contextlib
 import logging
 from enum import Enum
+from UI import kaggle_login as kl
 log = logging.getLogger(__name__) # Set up logging
 #Try to import the necessary libraries. If they are not found, suggest the user how to install them.
 try:
