@@ -13,6 +13,7 @@ This project has been developed as an assignment for the course "Collaboration a
 - Kaggle API key
 
 ## Installation in Colab
+
 Follow the steps [here](collab_install.ipynb) to install and run the project in Google Colab.
 
 ## Installation
@@ -36,7 +37,7 @@ Sometimes pip will be installed as pip3, if that is the case, run the following 
 ``` source {DH_INSTALLATION_PATH}/py312/bin/activate ```
 2. Run the main file
 ``` python main.py ```
-3. You can look for articles by entering a keywords in Japanese or English. The system will return the most relevant articles.
+3. You can look for articles by entering a keywords in Japanese or English. The system will return the most relevant articles and answer your querry based on the articles found.
 
 ## License
 

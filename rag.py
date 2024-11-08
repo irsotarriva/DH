@@ -15,6 +15,8 @@ import contextlib
 import logging
 from enum import Enum
 from UI import kaggle_login as kl
+from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 log = logging.getLogger(__name__) # Set up logging
 #Try to import the necessary libraries. If they are not found, suggest the user how to install them.
 try:
@@ -102,6 +104,123 @@ def _authenticateToKaggleViaGUI():
     login_window.login_signal.connect(_handle_login)
     app.exec_()
 
+class VectorEncoder:
+    """ Interface for dealing with the vector encoder.
+    @brief This class uses a pandas DataFrame to store the encodings of the data. If the encodings are not found, they will be created.
+    """
+    _data: pd.DataFrame = None
+    _encoder: SentenceTransformer = None
+
+    def __init__(self) -> None:
+        """ Initialize the vector encoder.
+        @brief This function will initialize the vector encoder.
+        """
+        self._encoder = SentenceTransformer("paraphrase-xlm-r-multilingual-v1")
+
+    def encode(self, data: pd.DataFrame) -> pd.DataFrame:
+        """ Encode the data.
+        @brief This function will encode the data using the SentenceTransformer.
+        @param data The data to encode.
+        @return The encoded data.
+        """
+        self._data = data
+        log.info("Encoding data...")
+        self._data["source_vector"] = None
+        self._data["date_vector"] = None
+        self._data["title_vector"] = None
+        self._data["author_vector"] = None
+        self._data["text_vector"] = None
+        total_rows = len(self._data)
+        for i, row in tqdm(self._data.iterrows(), total=total_rows, desc="Encoding data"):
+            self._data.at[i, "source_vector"] = self._encoder.encode(str(row["source"]), show_progress_bar=False)
+            self._data.at[i, "date_vector"] = self._encoder.encode(str(row["date"]), show_progress_bar=False)
+            self._data.at[i, "title_vector"] = self._encoder.encode(str(row["title"]), show_progress_bar=False)
+            self._data.at[i, "author_vector"] = self._encoder.encode(str(row["author"]), show_progress_bar=False)
+            self._data.at[i, "text_vector"] = self._encoder.encode(str(row["text"]), show_progress_bar=False)
+            if i >= 80000:
+                break
+        log.info("Data encoded.")
+        return self._data
+
+    def get(self) -> pd.DataFrame:
+        """ Get the encoded data.
+        @brief This function will return the encoded data.
+        @return The encoded data.
+        """
+        return self._data
+
+    def save(self, path: str) -> None:
+        """ Save the encoded data.
+        @brief This function will save the encoded data to a file.
+        @param path The path to save the encoded data.
+        @return None
+        """
+        log.info("Saving encoded data...")
+        self._data.to_csv(path, sep="	", index=False)
+        log.info("Encoded data saved.")
+
+    def load(self, path: str) -> None:
+        """ Load the encoded data.
+        @brief This function will load the encoded data from a file.
+        @param path The path to load the encoded data.
+        @return None
+        """
+        log.info("Loading encoded data...")
+        self._data = pd.read_csv(path, sep="\t", header=0, dtype={
+            "source": str,
+            "date": str,
+            "title": str,
+            "author": str,
+            "text": str,
+            "source_vector": object,
+            "date_vector": object,
+            "title_vector": object,
+            "author_vector": object,
+            "text_vector": object
+        })
+        log.info("Encoded data loaded.")
+    
+    def find_similar(self, keywork: str, n=5) -> pd.DataFrame:
+        """ Find similar articles.
+        @brief This function will find the n articles most similar to the keyword.
+        @param query The keyword to search for.
+        @return The similar articles and their similarity scores.
+        """
+        log.debug("Finding similar articles...")
+        query_vector = self._encoder.encode(keywork, show_progress_bar=False)
+        self._data["similarity"] = None
+        for i, row in tqdm(self._data.iterrows(), total=len(self._data), desc="Finding similar articles"):
+            similarity = max(
+                self._encoder.similarity(query_vector, row["source_vector"]),
+                self._encoder.similarity(query_vector, row["date_vector"]),
+                self._encoder.similarity(query_vector, row["title_vector"]),
+                self._encoder.similarity(query_vector, row["author_vector"]),
+                self._encoder.similarity(query_vector, row["text_vector"])
+            )
+            self._data.at[i, "similarity"] = similarity
+        self._data["similarity"] = self._data["similarity"].astype(float)
+        similar_articles = self._data.nlargest(n, "similarity")
+        log.info("Similar articles found.")
+        return similar_articles[["source", "date", "title", "author", "text", "similarity"]]
+
+    def search(self, keywords: list[str], n=5) -> pd.DataFrame:
+        """ Search for articles simultaneously satisfying all the keywords.
+        @brief This function will search for the n articles that simultaneously satisfy all the keywords
+        @param keywords The keywords to search for.
+        @return The articles that satisfy all the keywords.
+        """
+        #the search will be done by calling the find_similar function for each keyword and then calculating the combined query score defined as the mean of the similarity scores.
+        log.debug("Searching for articles...")
+        self._data["query_score"] = None
+        for keyword in keywords:
+            similar_articles = self.find_similar(keyword)
+            for i, row in similar_articles.iterrows():
+                if self._data.at[i, "query_score"] is None:
+                    self._data.at[i, "query_score"] = row["similarity"]
+                else:
+                    self._data.at[i, "query_score"] += row["similarity"]
+        self._data["query_score"] = self._data["query_score"] / len(keywords)
+
 class USERTYPES(Enum):
     """ Enum for the user types. """
     CHATBOT = 1
@@ -111,13 +230,15 @@ class Chat:
     """ interface for dealing with the chatbot """
     _model: torch.nn.Module = None
     _chatHistory :list[USERTYPES, str] = []
+    _instructions: str = ""
 
-    def __init__(self, model: torch.nn.Module) -> None:
+    def __init__(self, model: torch.nn.Module, instructions: str = "") -> None:
         """ Initialize the chat.
         @brief This function will initialize the chat.
         @param model The model to use for the chat.
         """
         self._model = model
+        self._instructions = instructions
 
     def write(self, message: str, user: USERTYPES = USERTYPES.USER) -> None:
         """ Write a message.
@@ -135,6 +256,13 @@ class Chat:
         """
         return self._chatHistory[n]
     
+    def __len__(self) -> int:
+        """ Get the length of the chat history.
+        @brief This function will return the length of the chat history.
+        @return The length of the chat history.
+        """
+        return len(self._chatHistory)
+
     def query(self, query: str) -> str:
         """ Query the chatbot.
         @brief This function will write the query to the chat history and then query the chatbot using the whole chat history.
@@ -148,17 +276,15 @@ class Chat:
         USER_TEMPLATE = "<start_of_turn>user\n{prompt}<end_of_turn><eos>\n"
         CHATBOT_TEMPLATE = "<start_of_turn>chatbot\n{prompt}<end_of_turn><eos>\n"
         #get the chat history and format it
-        str_query = ""
-        for user, message in self._chatHistory:
+        str_query = instructions #start with the instructions for the chatbot
+        for user, message in self._chatHistory:#add the chat history to the query
             if user == USERTYPES.USER:
                 str_query += USER_TEMPLATE.format(prompt=message)
             else:
                 str_query += CHATBOT_TEMPLATE.format(prompt=message)
         str_query += "<start_of_turn>model\n"
         prompt = (str_query)
-        log.debug("Querying the model with: " + prompt)
         response = self._model.generate(USER_TEMPLATE.format(prompt=prompt),device=MACHINE_TYPE, output_len=128,)
-        log.debug("Response from the model: " + response)
         self.write(response, USERTYPES.CHATBOT)
         return response
 
@@ -171,8 +297,7 @@ class Chat:
 
 class RAG:
     """ Implements the RAG model using Gemma 2 2b JPN IT"""
-    _english_news: pd.DataFrame = None
-    _japanese_news: pd.DataFrame = None
+    _vector_encoder: VectorEncoder = None
     _model: torch.nn.Module = None
     def _kaggle_login(self) -> None:
         """ Log in to Kaggle.
@@ -236,8 +361,20 @@ class RAG:
                 raise FileNotFoundError("No version subfolders found in the data path.")
         log.info("Loading data...")
         log.debug("The data has been located at: " + data_path)
-        english_news = pd.read_csv(os.path.join(data_path, "english_news.csv"), sep="	", header=(0))
-        japanese_news = pd.read_csv(os.path.join(data_path, "japanese_news.csv"), sep="	", header=(0))
+        english_news = pd.read_csv(os.path.join(data_path, "english_news.csv"), sep="	", header=(0), dtype={
+            "source": str,
+            "date": str,
+            "title": str,
+            "author": str,
+            "text": str
+        }, low_memory=False)
+        japanese_news = pd.read_csv(os.path.join(data_path, "japanese_news.csv"), sep="	", header=(0), dtype={
+            "source": str,
+            "date": str,
+            "title": str,
+            "author": str,
+            "text": str
+        }, low_memory=False)
         #add and id column to the dataframes following the dataIndex. This will be used to identify articles on an unique way (The title might not be unique)
         english_news["id"] = english_news.index
         japanese_news["id"] = japanese_news.index
@@ -301,12 +438,25 @@ class RAG:
         log.debug("Initializing RAG model...")
         locale.getpreferredencoding = lambda: 'UTF-8' # Set up locale
         self._kaggle_login() # Log in to Kaggle
-        try:
-            self._english_news, self._japanese_news = self._load_data() # Load the data
-        except FileNotFoundError as e:
-            log.critical("Could not load the data. Please make sure the data is available.")
-            log.critical(e)
-            sys.exit(1)
+        self._vector_encoder = VectorEncoder()
+        #look for any stored vector encodings of the data. If not found, create them.
+        if os.path.exists(os.path.join(os.getcwd(), "encoded_data.csv")):
+            log.debug("Encoded data found. Loading...")
+            self._vector_encoder.load(os.path.join(os.getcwd(), "encoded_data.csv"))
+        else:
+            english_news, japanese_news = None, None
+            try:
+                english_news, japanese_news = self._load_data() # Load the data
+            except FileNotFoundError as e:
+                log.critical("Could not load the data. Please make sure the data is available.")
+                log.critical(e)
+                sys.exit(1)
+                log.debug("Encoded data not found. An encoding will be created.")
+                log.info("Creating vector encodings, this might take a while...")
+            #concatenate the dataframes to encode them together
+            data = pd.concat([english_news, japanese_news], ignore_index=True)
+            self._vector_encoder.encode(data)
+            self._vector_encoder.save(os.path.join(os.getcwd(), "encoded_data.csv"))
         self._model = self._load_model() # Load the model
         log.debug("RAG model initialized.")
     
@@ -316,5 +466,22 @@ class RAG:
         @param query The query to ask the RAG model.
         @return The response from the RAG model.
         """
-        chat = Chat(self._model) #Start a new chat
+        #search for similar articles which can be used as context for the chatbot
+        similar_articles = self._vector_encoder.find_similar(query)
+        #get the top 5 similar articles
+        similar_articles = similar_articles.head(5)
+        #get the source, data, title, author and text of the articles
+        sources = similar_articles["source"].tolist()
+        dates = similar_articles["date"].tolist()
+        titles = similar_articles["title"].tolist()
+        authors = similar_articles["author"].tolist()
+        texts = similar_articles["text"].tolist()
+        #Prepare the instructions for the chatbot
+        instructions = "Answer the querry from the user using the following news articles as context:\n"
+        for i in range(len(sources)):
+            instructions += f"Source: {sources[i]}\nDate: {dates[i]}\nTitle: {titles[i]}\nAuthor: {authors[i]}\nText: {texts[i]}\n\n"
+        instructions += "Answer the user either in English or Japanese, depending on the language of the query.\n"
+        #Start a new chat with the instructions 
+        chat = Chat(self._model, instructions)
+        chat.clear() #Clear the chat history
         return chat.query(query)

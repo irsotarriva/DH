@@ -21,7 +21,7 @@ except ImportError:
 def main() -> None:
     """ Main function to run the program. """
     log.setup_logging()
-    logging.basicConfig(level="DEBUG")
+    logging.basicConfig(level="INFO")
     import rag #implementation of the RAG model.
     MyRAG = rag.RAG()
     app = QApplication(sys.argv)
