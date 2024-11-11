@@ -17,6 +17,7 @@ import logging
 from enum import Enum
 from UI import kaggle_login as kl
 from sentence_transformers import SentenceTransformer
+from sentence_transformers import util
 from tqdm import tqdm
 log = logging.getLogger(__name__) # Set up logging
 #Try to import the necessary libraries. If they are not found, suggest the user how to install them.
@@ -142,9 +143,11 @@ class VectorEncoder:
                 text_vectors.append(self._encoder.encode(paragraphs, show_progress_bar=False, batch_size=batch_size, device=MACHINE_TYPE, convert_to_tensor=True))
             for i, row in batch_data.iterrows():
                 for j, encoded_paragraph in enumerate(text_vectors[i-start_idx]):
-                    tuple_encoded_paragraph = tuple(ast.literal_eval(str(encoded_paragraph.tolist())))
+                    tuple_encoded_paragraph = tuple(encoded_paragraph.tolist())
                     self._quickSearchDict[tuple_encoded_paragraph] = [i, j]
-        self._corpus_encodings = torch.stack(list(self._quickSearchDict.keys()))
+            if start_idx > 100:
+                break
+        self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()]).to(MACHINE_TYPE)
         log.info("Data encoded.")
         return self._quickSearchDict
 
@@ -166,7 +169,7 @@ class VectorEncoder:
         #save the quick search dictionary
         with open(path, 'w') as f:
             for key, value in self._quickSearchDict.items():
-                key_str = key.tolist()  # Convert tensor to list
+                key_str = list(key)  # Convert tensor to list
                 f.write(f"{key_str}\t{value[0]}\t{value[1]}\n")
         #save the data
         log.info("Encoded data saved.")
@@ -186,7 +189,7 @@ class VectorEncoder:
                     key, value1, value2 = line.split("\t")
                     key_tuple = tuple(ast.literal_eval(key))
                     self._quickSearchDict[key_tuple] = [int(value1), int(value2)]
-            self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()])
+            self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()]).to(MACHINE_TYPE)
             self._data = data
             #load the data
             log.info("Encoded data loaded.")
@@ -213,7 +216,7 @@ class VectorEncoder:
         sources, dates, titles, authors, texts = [], [], [], [], []
         log.debug("Finding similar articles...")
         query_vector = self._encoder.encode(keywork, show_progress_bar=False,convert_to_tensor=True).to(MACHINE_TYPE)
-        similarity_scores = self._encoder.similarity(query_vector, self._corpus_encodings)[0]
+        similarity_scores = util.pytorch_cos_sim(query_vector, self._corpus_encodings)[0]
         scores, indices = torch.topk(similarity_scores, n)
         for i, score in zip(indices, scores):
             key_tuple = tuple(self._corpus_encodings[i].tolist())
@@ -499,9 +502,9 @@ class RAG:
         keywordsChat = Chat(self._model,"")
         keywordsChat.clear()
         log.debug("Querying the chatbot for keywords...")
-        keywords= keywordsChat.query(f"Given the query: '{query}', give a comma separated list of keywords that can be used to search for news articles to help answer the query(dates should be given on Japanese format YYYY-MM-DD), keywords can be in Japanese or english. Example: 'Japan, 開会式, オリンピック, 2021-07-23'.")
-        keywords = keywords.split(",")
+        keywords= ""#keywordsChat.query(f"Given the query: '{query}', give a comma separated list of keywords that can be used to search for news articles to help answer the query, keywords can be in Japanese or English. Example:'Japan, 開会式, オリンピック'")
         log.debug("Keywords found: " + str(keywords))
+        keywords = keywords.split(",")
         #search for similar articles which can be used as context for the chatbot
         similar_articles = self._vector_encoder.find_similar(keywords)
         #get the top 5 similar articles
