@@ -8,6 +8,7 @@
 """
 # -----------------------------------------------------------------------------IMPORTS-----------------------------------------------------------------------------#
 import locale
+import ast
 import os
 import sys
 import subprocess
@@ -110,37 +111,43 @@ class VectorEncoder:
     """
     _data: pd.DataFrame = None
     _encoder: SentenceTransformer = None
-
+    _quickSearchDict: dict[torch.Tensor,[int, int]] = None
+    _corpus_encodings: torch.Tensor = None
     def __init__(self) -> None:
         """ Initialize the vector encoder.
         @brief This function will initialize the vector encoder.
         """
         self._encoder = SentenceTransformer("paraphrase-xlm-r-multilingual-v1")
 
-    def encode(self, data: pd.DataFrame) -> pd.DataFrame:
+    def encode(self, data: pd.DataFrame) -> dict[torch.Tensor,[int, int]]:
         """ Encode the data.
         @brief This function will encode the data using the SentenceTransformer.
         @param data The data to encode.
         @return The encoded data.
         """
         self._data = data
+
+        #the dictionary will use the tensor as key and return the index of the article in the dataframe plus the paragraph index.
         log.info("Encoding data...")
-        self._data["source_vector"] = None
-        self._data["date_vector"] = None
-        self._data["title_vector"] = None
-        self._data["author_vector"] = None
-        self._data["text_vector"] = None
         total_rows = len(self._data)
-        for i, row in tqdm(self._data.iterrows(), total=total_rows, desc="Encoding data"):
-            self._data.at[i, "source_vector"] = self._encoder.encode(str(row["source"]), show_progress_bar=False)
-            self._data.at[i, "date_vector"] = self._encoder.encode(str(row["date"]), show_progress_bar=False)
-            self._data.at[i, "title_vector"] = self._encoder.encode(str(row["title"]), show_progress_bar=False)
-            self._data.at[i, "author_vector"] = self._encoder.encode(str(row["author"]), show_progress_bar=False)
-            self._data.at[i, "text_vector"] = self._encoder.encode(str(row["text"]), show_progress_bar=False)
-            if i >= 80000:
-                break
+        self._quickSearchDict = {}
+        batch_size = 32  # Adjust the batch size according to your GPU memory
+        for start_idx in tqdm(range(0, total_rows, batch_size), desc="Encoding data"):
+            end_idx = min(start_idx + batch_size, total_rows)
+            batch_data = self._data.iloc[start_idx:end_idx]
+            #the text will be encoded in paragraphs to help the retrieval be more accurate
+            text_vectors = []
+            for text in batch_data["text"].astype(str).tolist():
+                paragraphs = text.split("\n")
+                text_vectors.append(self._encoder.encode(paragraphs, show_progress_bar=False, batch_size=batch_size, device=MACHINE_TYPE, convert_to_tensor=True))
+            for i, row in batch_data.iterrows():
+                for j, encoded_paragraph in enumerate(text_vectors[i-start_idx]):
+                    tuple_encoded_paragraph = tuple(ast.literal_eval(str(encoded_paragraph.tolist())))
+                    self._quickSearchDict[tuple_encoded_paragraph] = [i, j]
+        self._corpus_encodings = torch.stack(list(self._quickSearchDict.keys()))
         log.info("Data encoded.")
-        return self._data
+        return self._quickSearchDict
+
 
     def get(self) -> pd.DataFrame:
         """ Get the encoded data.
@@ -156,54 +163,76 @@ class VectorEncoder:
         @return None
         """
         log.info("Saving encoded data...")
-        self._data.to_csv(path, sep="	", index=False)
+        #save the quick search dictionary
+        with open(path, 'w') as f:
+            for key, value in self._quickSearchDict.items():
+                key_str = key.tolist()  # Convert tensor to list
+                f.write(f"{key_str}\t{value[0]}\t{value[1]}\n")
+        #save the data
         log.info("Encoded data saved.")
 
-    def load(self, path: str) -> None:
+    def load(self, path: str, data: pd.DataFrame) -> None:
         """ Load the encoded data.
         @brief This function will load the encoded data from a file.
         @param path The path to load the encoded data.
         @return None
         """
-        log.info("Loading encoded data...")
-        self._data = pd.read_csv(path, sep="\t", header=0, dtype={
-            "source": str,
-            "date": str,
-            "title": str,
-            "author": str,
-            "text": str,
-            "source_vector": object,
-            "date_vector": object,
-            "title_vector": object,
-            "author_vector": object,
-            "text_vector": object
-        })
-        log.info("Encoded data loaded.")
+        log.info("Loading encoding...")
+        #load the quick search dictionary
+        try:
+            self._quickSearchDict = {}
+            with open(path) as f:
+                for line in f:
+                    key, value1, value2 = line.split("\t")
+                    key_tuple = tuple(ast.literal_eval(key))
+                    self._quickSearchDict[key_tuple] = [int(value1), int(value2)]
+            self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()])
+            self._data = data
+            #load the data
+            log.info("Encoded data loaded.")
+        except FileNotFoundError as e:
+            log.critical("Could not load the encoded data. Please make sure the data is available.")
+            log.critical(e)
+            sys.exit(1)
     
-    def find_similar(self, keywork: str, n=5) -> pd.DataFrame:
-        """ Find similar articles.
-        @brief This function will find the n articles most similar to the keyword.
-        @param query The keyword to search for.
-        @return The similar articles and their similarity scores.
+    def _split_text_into_paragraphs(self, text: str) -> list[str]:
+        """ Split the text into paragraphs.
+        @brief This function will split the text into paragraphs.
+        @param text The text to split.
+        @return The paragraphs of the text.
         """
-        log.debug("Finding similar articles...")
-        query_vector = self._encoder.encode(keywork, show_progress_bar=False)
-        self._data["similarity"] = None
-        for i, row in tqdm(self._data.iterrows(), total=len(self._data), desc="Finding similar articles"):
-            similarity = max(
-                self._encoder.similarity(query_vector, row["source_vector"]),
-                self._encoder.similarity(query_vector, row["date_vector"]),
-                self._encoder.similarity(query_vector, row["title_vector"]),
-                self._encoder.similarity(query_vector, row["author_vector"]),
-                self._encoder.similarity(query_vector, row["text_vector"])
-            )
-            self._data.at[i, "similarity"] = similarity
-        self._data["similarity"] = self._data["similarity"].astype(float)
-        similar_articles = self._data.nlargest(n, "similarity")
-        log.info("Similar articles found.")
-        return similar_articles[["source", "date", "title", "author", "text", "similarity"]]
+        return text.split("\n")
 
-    def search(self, keywords: list[str], n=5) -> pd.DataFrame:
+    def find_similar(self, keywork: str, n=20) -> pd.DataFrame:
+        """ Find paragraphs most similar to the keyword.
+        @brief This function will find the n articles with a paragraph most similar to the keyword.
+        @param query The keyword to search for.
+        @return a tuple containing the source, date, title, author, paragraph, and similarity score of the n most similar articles. 
+        @note: if the keyword is found on the date, title, author or source, the paragraph field returned will be the first paragraph of the article.
+        """
+        sources, dates, titles, authors, texts = [], [], [], [], []
+        log.debug("Finding similar articles...")
+        query_vector = self._encoder.encode(keywork, show_progress_bar=False,convert_to_tensor=True).to(MACHINE_TYPE)
+        similarity_scores = self._encoder.similarity(query_vector, self._corpus_encodings)[0]
+        scores, indices = torch.topk(similarity_scores, n)
+        for i, score in zip(indices, scores):
+            key_tuple = tuple(self._corpus_encodings[i].tolist())
+            article_id, paragraph_id = self._quickSearchDict[key_tuple]
+            sources.append(self._data.at[article_id, "source"])
+            dates.append(self._data.at[article_id, "date"])
+            titles.append(self._data.at[article_id, "title"])
+            authors.append(self._data.at[article_id, "author"])
+            texts.append(self._data.at[article_id, "text"].split("\n")[paragraph_id])
+        return pd.DataFrame({
+            "source": sources,
+            "date": dates,
+            "title": titles,
+            "author": authors,
+            "paragraph": texts,
+            "similarity": scores
+        })
+
+    def search(self, keywords: list[str], n=20) -> pd.DataFrame:
         """ Search for articles simultaneously satisfying all the keywords.
         @brief This function will search for the n articles that simultaneously satisfy all the keywords
         @param keywords The keywords to search for.
@@ -219,7 +248,7 @@ class VectorEncoder:
                     self._data.at[i, "query_score"] = row["similarity"]
                 else:
                     self._data.at[i, "query_score"] += row["similarity"]
-        self._data["query_score"] = self._data["query_score"] / len(keywords)
+        self._data["query_score"] /= len(keywords)
 
 class USERTYPES(Enum):
     """ Enum for the user types. """
@@ -276,7 +305,7 @@ class Chat:
         USER_TEMPLATE = "<start_of_turn>user\n{prompt}<end_of_turn><eos>\n"
         CHATBOT_TEMPLATE = "<start_of_turn>chatbot\n{prompt}<end_of_turn><eos>\n"
         #get the chat history and format it
-        str_query = instructions #start with the instructions for the chatbot
+        str_query = self._instructions #start with the instructions for the chatbot
         for user, message in self._chatHistory:#add the chat history to the query
             if user == USERTYPES.USER:
                 str_query += USER_TEMPLATE.format(prompt=message)
@@ -440,21 +469,21 @@ class RAG:
         self._kaggle_login() # Log in to Kaggle
         self._vector_encoder = VectorEncoder()
         #look for any stored vector encodings of the data. If not found, create them.
+        english_news, japanese_news = None, None
+        try:
+            english_news, japanese_news = self._load_data() # Load the data
+        except FileNotFoundError as e:
+            log.critical("Could not load the data. Please make sure the data is available.")
+            log.critical(e)
+            sys.exit(1)
+            log.debug("Encoded data not found. An encoding will be created.")
+            log.info("Creating vector encodings, this might take a while...")
+        #concatenate the dataframes to encode them together
+        data = english_news #pd.concat([english_news, japanese_news], ignore_index=True)
         if os.path.exists(os.path.join(os.getcwd(), "encoded_data.csv")):
             log.debug("Encoded data found. Loading...")
-            self._vector_encoder.load(os.path.join(os.getcwd(), "encoded_data.csv"))
+            self._vector_encoder.load(os.path.join(os.getcwd(), "encoded_data.csv"), data)
         else:
-            english_news, japanese_news = None, None
-            try:
-                english_news, japanese_news = self._load_data() # Load the data
-            except FileNotFoundError as e:
-                log.critical("Could not load the data. Please make sure the data is available.")
-                log.critical(e)
-                sys.exit(1)
-                log.debug("Encoded data not found. An encoding will be created.")
-                log.info("Creating vector encodings, this might take a while...")
-            #concatenate the dataframes to encode them together
-            data = pd.concat([english_news, japanese_news], ignore_index=True)
             self._vector_encoder.encode(data)
             self._vector_encoder.save(os.path.join(os.getcwd(), "encoded_data.csv"))
         self._model = self._load_model() # Load the model
@@ -466,8 +495,15 @@ class RAG:
         @param query The query to ask the RAG model.
         @return The response from the RAG model.
         """
+        #use the LLM to generate a comma separated list of keywords to be used on the search engine to provide context for the chatbot to answer the query
+        keywordsChat = Chat(self._model,"")
+        keywordsChat.clear()
+        log.debug("Querying the chatbot for keywords...")
+        keywords= keywordsChat.query(f"Given the query: '{query}', give a comma separated list of keywords that can be used to search for news articles to help answer the query(dates should be given on Japanese format YYYY-MM-DD), keywords can be in Japanese or english. Example: 'Japan, 開会式, オリンピック, 2021-07-23'.")
+        keywords = keywords.split(",")
+        log.debug("Keywords found: " + str(keywords))
         #search for similar articles which can be used as context for the chatbot
-        similar_articles = self._vector_encoder.find_similar(query)
+        similar_articles = self._vector_encoder.find_similar(keywords)
         #get the top 5 similar articles
         similar_articles = similar_articles.head(5)
         #get the source, data, title, author and text of the articles
@@ -475,12 +511,14 @@ class RAG:
         dates = similar_articles["date"].tolist()
         titles = similar_articles["title"].tolist()
         authors = similar_articles["author"].tolist()
-        texts = similar_articles["text"].tolist()
+        texts = similar_articles["paragraph"].tolist()
         #Prepare the instructions for the chatbot
-        instructions = "Answer the querry from the user using the following news articles as context:\n"
+        instructions = "Answer the querry from the user using the following news articles as context:\n=============================================================="
         for i in range(len(sources)):
-            instructions += f"Source: {sources[i]}\nDate: {dates[i]}\nTitle: {titles[i]}\nAuthor: {authors[i]}\nText: {texts[i]}\n\n"
-        instructions += "Answer the user either in English or Japanese, depending on the language of the query.\n"
+            instructions += f"Source: {sources[i]}\nDate: {dates[i]}\nTitle: {titles[i]}\nAuthor: {authors[i]}\nParagraph: {texts[i]}\n\n"
+        instructions += "==============================================================\n\n"
+        instructions += "Respond to the user on the same language he/she is addressing you regardless of the language of the news articles. Cite your sources whenever possible."
+        log.debug("Instructions: " + instructions)
         #Start a new chat with the instructions 
         chat = Chat(self._model, instructions)
         chat.clear() #Clear the chat history
