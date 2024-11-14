@@ -5,3 +5,4 @@ log/logs/*
 ./vscode/*
 gemma_pytorch
 python311
+encoded_data.csv

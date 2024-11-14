@@ -5,5 +5,5 @@ pandas
 PyQt5
 immutabledict
 sentencepiece == 0.1.99
-sentence-transformers==2.2.2
+sentence-transformers==3.3.0
 tqdm
