@@ -5,6 +5,7 @@ from typing import List, Dict
 from sentence_transformers import SentenceTransformer, util
 from tqdm import tqdm
 import os
+import numpy as np
 import kaggle_session_manager
 import logging
 log = logging.getLogger(__name__) # Set up logging
@@ -60,8 +61,6 @@ class VectorEncoder:
                 for j, encoded_paragraph in enumerate(text_vectors[i - start_idx]):
                     tuple_encoded_paragraph = tuple(encoded_paragraph.tolist())
                     self._quickSearchDict[tuple_encoded_paragraph] = [i, j]
-            if start_idx > 10000:
-                break
         self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()]).to(self._device)
         log.info("Data encoded.")
         return self._quickSearchDict
@@ -83,6 +82,8 @@ class VectorEncoder:
         ]
         for error_message in error_messages:
             data = data[~data["text"].str.contains(error_message)]
+        #remove articles with empty text or with less than 50 characters.
+        data = data[data["text"].str.len() > 50]
         log.info("Data cleaned.")
         return data
     def get(self) -> pd.DataFrame:
@@ -167,11 +168,9 @@ class VectorEncoder:
         @note: if the keyword is found on the date, title, author or source, the paragraph field returned will be the first paragraph of the article.
         """
         sources, dates, titles, authors, texts, uids, full_texts = [], [], [], [], [], [], []
-        log.debug("Finding similar articles...")
         query_vector = self._encoder.encode(keywork, show_progress_bar=False,convert_to_tensor=True).to(self._device)
         similarity_scores = util.pytorch_cos_sim(query_vector, self._corpus_encodings)[0]
         scores, indices = torch.topk(similarity_scores, n)
-        log.debug(f"the database has {len(self._data)} articles")
         for i in indices:
             key_tuple = tuple(self._corpus_encodings[i].tolist())
             article_id, paragraph_id = self._quickSearchDict[key_tuple]
@@ -202,15 +201,19 @@ class VectorEncoder:
         """
         #the search will be done by calling the find_similar function for each keyword and then calculating the combined query score defined as the mean of the similarity scores.
         log.debug("Searching for articles...")
-        self._data["query_score"] = None
+        potential_articles = pd.DataFrame()
         for keyword in keywords:
-            similar_articles = self.find_similar(keyword)
-            for i, row in similar_articles.iterrows():
-                if self._data.at[i, "query_score"] is None:
-                    self._data.at[i, "query_score"] = row["similarity"]
-                else:
-                    self._data.at[i, "query_score"] += row["similarity"]
-        self._data["query_score"] /= len(keywords)
+            potential_articles = pd.concat([potential_articles, self.find_similar(keyword, n*20)], axis=0)
+        potential_articles = potential_articles.drop_duplicates(subset="UID").reset_index(drop=True)
+        potential_articles["query_score"] = 0
+        #evaluate the cosine similarity of the paragraph with each keyword and calculate the query score as the sum of the similarity scores.
+        paragraph_vectors = self._encoder.encode(potential_articles["paragraph"].tolist(), show_progress_bar=False, convert_to_tensor=True).to(self._device)
+        for keyword in keywords:
+            keyword_vector = self._encoder.encode(keyword, show_progress_bar=False, convert_to_tensor=True).to(self._device)
+            similarity_scores = util.pytorch_cos_sim(keyword_vector, paragraph_vectors)
+            potential_articles["query_score"] += similarity_scores.cpu().numpy()
+        potential_articles = potential_articles.sort_values("query_score", ascending=False).head(n)
+        return potential_articles
 
     def load_data(self,kaggle_manager: kaggle_session_manager.KaggleSessionManager) -> None:
         """ Load the data from Kaggle.

@@ -93,7 +93,7 @@ class RAG:
             keywords = keywords.replace("、", ",").split(",")
 
         #search for similar articles which can be used as context for the chatbot
-        similar_articles = self._vector_encoder.find_similar(keywords, n=n)
+        similar_articles = self._vector_encoder.search(keywords, n=n)
         return similar_articles
 
     def generate_response(self, query: str) -> tuple[str, pd.DataFrame]:
@@ -102,7 +102,7 @@ class RAG:
         @param query The query to generate a response for.
         @return The generated response and the dataFrame with the similar articles.
         """
-        similar_articles = self.find_similar_articles(query, n=10)
+        similar_articles = self.find_similar_articles(query, n=8)
         UIDs = similar_articles["UID"].tolist()
         sources = similar_articles["source"].tolist()
         dates = similar_articles["date"].tolist()
@@ -124,7 +124,7 @@ class RAG:
             instructions += f"Content snippet: {texts[i]}\n\n"
         instructions += "==============================================================\n\n"
         instructions += "Answer the question on the same language it is written (japanese or english).\n" 
-        instructions += "It is very important to include citations\n"
+        #instructions += "It is very important to include citations\n"
         instructions += "Use [UID] to provide citations to the news articles, links in this format will automatically be transformed into hyperlinks to the original articles and transformed to look on the format desired by the user. Example, to cite the article with UID: @123/4, write [@123/4], not [UID:@123/4]. For multiple citations, place each citation in a separate pair of brackets. Example: [@123/4][@456/7] do not write them together like [@123/4, @456/7].\n"
         instructions += "Use HTML tags to format the text. Example: <b>bold text</b>, <i>italic text</i>, <ul><li>unordered list item</li></ul>, <ol><li>ordered list item</li></ol>, <a href='link'>hyperlink</a>\n"
 
