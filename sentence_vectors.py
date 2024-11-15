@@ -61,6 +61,8 @@ class VectorEncoder:
                 for j, encoded_paragraph in enumerate(text_vectors[i - start_idx]):
                     tuple_encoded_paragraph = tuple(encoded_paragraph.tolist())
                     self._quickSearchDict[tuple_encoded_paragraph] = [i, j]
+            if start_idx > 1000:
+                break
         self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()]).to(self._device)
         log.info("Data encoded.")
         return self._quickSearchDict
@@ -144,8 +146,9 @@ class VectorEncoder:
         min_paragraph_length = 150 #helps to avoid splitting the text into too many paragraphs.
         if japanese_char_ratio > 0.5:
             min_paragraph_length = 50
-        #split the text into paragraphs
-        paragraphs = re.split(r'\n|\.|。', text)
+            paragraphs = re.split(r'\n', text)
+        else:
+            paragraphs = re.split(r'\n|\.', text)
         filtered_paragraphs = []
         buffer = ""
         for paragraph in paragraphs:

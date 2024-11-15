@@ -41,7 +41,9 @@ class RAG:
             log.info("Downloading model weights...")
             model_path = self.kaggle_manager.download_model(os.path.join("google","gemma-2-2b-jpn-it","pyTorch","gemma-2-2b-jpn-it"))
             log.info("Model weights downloaded.")
-        sys.path.append(model_path)
+        sys.path.append(os.path.join(os.getcwd(), "gemma_pytorch"))
+        log.info(f"Gemma path: {os.path.join(os.getcwd(), 'gemma_pytorch')}")
+        log.info(f"Model path: {model_path}")
         from gemma.config import GemmaConfig, get_model_config
         from gemma.model import GemmaForCausalLM
         from gemma.tokenizer import Tokenizer
