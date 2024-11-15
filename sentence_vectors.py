@@ -61,8 +61,6 @@ class VectorEncoder:
                 for j, encoded_paragraph in enumerate(text_vectors[i - start_idx]):
                     tuple_encoded_paragraph = tuple(encoded_paragraph.tolist())
                     self._quickSearchDict[tuple_encoded_paragraph] = [i, j]
-            if start_idx > 1000:
-                break
         self._corpus_encodings = torch.stack([torch.tensor(key) for key in self._quickSearchDict.keys()]).to(self._device)
         log.info("Data encoded.")
         return self._quickSearchDict
@@ -213,8 +211,8 @@ class VectorEncoder:
         paragraph_vectors = self._encoder.encode(potential_articles["paragraph"].tolist(), show_progress_bar=False, convert_to_tensor=True).to(self._device)
         for keyword in keywords:
             keyword_vector = self._encoder.encode(keyword, show_progress_bar=False, convert_to_tensor=True).to(self._device)
-            similarity_scores = util.pytorch_cos_sim(keyword_vector, paragraph_vectors)
-            potential_articles["query_score"] += similarity_scores.cpu().numpy()
+            similarity_scores = util.pytorch_cos_sim(keyword_vector, paragraph_vectors)[0]
+            potential_articles["query_score"] += similarity_scores.cpu().numpy().flatten()
         potential_articles = potential_articles.sort_values("query_score", ascending=False).head(n)
         return potential_articles
 
